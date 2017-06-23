@@ -1,0 +1,89 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import errno
+import optparse
+import os
+import shutil
+import sys
+import tempfile
+
+from subprocess import Popen, PIPE
+
+
+if (__name__ == '__main__'):
+    parser = optparse.OptionParser(usage='%prog DOMAIN -a ALIAS [-a ALIAS] ...')
+    parser.add_option('-a', '--alias', dest='aliases', action='append', default=[], help='domain aliases')
+    parser.add_option('--outdir', default=os.getcwd(), help='directory to store crt + key')
+    flags, prog_args  = parser.parse_args()
+
+    if len(prog_args) != 1:
+        parser.print_help()
+        sys.exit(2)
+
+    domain = os.path.basename(prog_args[0])
+    crt_file = os.path.join(flags.outdir, '%s.crt' % domain)
+    key_file = os.path.join(flags.outdir, '%s.key' % domain)
+
+    for f in [crt_file, key_file]:
+        if os.path.exists(f):
+            raise SystemExit('Already exists: %s' % f )
+
+    sslconf = [
+        '[req]',
+        'distinguished_name = req_distinguished_name',
+        'x509_extensions = v3_req',
+        'prompt = no',
+        '',
+        '[req_distinguished_name]',
+        'C = RU',
+        'CN = %s' % domain,
+        '',
+        '[v3_req]',
+        'keyUsage = keyEncipherment, dataEncipherment',
+        'extendedKeyUsage = serverAuth',
+        'subjectAltName = @alt_names',
+        '',
+        '[alt_names]'
+    ]
+
+    flags.aliases.insert(0, domain)
+
+    for i, alias in enumerate(flags.aliases):
+        sslconf.append('DNS.%s = %s' %(i+1, alias))
+
+    conffile = os.path.join('/tmp', '%s.req.conf_%s' %(domain, next(tempfile._get_candidate_names())))
+    with open(conffile, 'w') as fd:
+        fd.write('\n'.join(sslconf))
+
+    openssl_cmd = [
+        'openssl',
+        'req', '-x509',
+        '-nodes',
+        '-days', '3650',
+        '-newkey', 'rsa:2048',
+        '-keyout', key_file,
+        '-out', crt_file,
+        '-config', conffile
+    ]
+
+    proc = Popen(openssl_cmd, stdout=PIPE, stderr=PIPE)
+    proc.wait()
+    out, err = proc.communicate()
+
+    os.remove(conffile)
+
+    if proc.returncode:
+        for f in [crt_file, key_file]:
+            try:
+                os.remove(f)
+            except OSError as e:
+                if e.errno != errno.ENOENT:
+                    sys.stderr.write('%s\n' % e)
+        raise SystemExit('Cannot create certificate: %s' % err)
+
+    for f in [crt_file, key_file]:
+        os.chmod(f, 0600)
+
+    sys.stderr.write('saved to: %s\n' % key_file)
+    sys.stderr.write('saved to: %s\n' % crt_file)
